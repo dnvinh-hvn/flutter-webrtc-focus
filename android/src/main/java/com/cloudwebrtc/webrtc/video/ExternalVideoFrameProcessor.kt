@@ -9,7 +9,13 @@ import android.graphics.RectF
 import android.graphics.YuvImage
 import android.util.Log
 import com.google.mediapipe.framework.image.BitmapImageBuilder
-import com.google.mediapipe.framework.image.MPImage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.webrtc.JavaI420Buffer
 import org.webrtc.VideoFrame
 import org.webrtc.YuvConverter
@@ -20,9 +26,11 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.abs
+import androidx.core.graphics.scale
 
 class ExternalVideoFrameProcessor(
-    private val context: Context,
+    context: Context,
     private val outputWidth: Int,
     private val outputHeight: Int,
     private val enableSegmentation: Boolean = true
@@ -37,11 +45,16 @@ class ExternalVideoFrameProcessor(
     private var frameCount = 0L
     private var detectedFrameCount = 0L
     private var croppedFrameCount = 0L
-    private val SMOOTHING_FACTOR = 0.05f
+    private var SMOOTHING_FACTOR = 0.05f
+    private var minWidthForUpdateCrop = 20f
     private val PADDING_FACTOR = 0.5f
-    private val FRAME_SKIP = 2 // Process every 3rd frame for detection
+    private val FRAME_SKIP = 20 // Process every 3rd frame for detection
     private val yuvConverter = YuvConverter()
     private val LOG_INTERVAL = 30 // Log every 30 frames
+
+    private var moveRectJob: Job? = null
+
+    private var processorScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     
     override fun onFrame(frame: VideoFrame): VideoFrame {
         if (!enableSegmentation) {
@@ -49,6 +62,20 @@ class ExternalVideoFrameProcessor(
         }
         
         frameCount++
+
+        if(lastCropRect.get() == null && frame.buffer.width > 1f && frame.buffer.height > 1f) {
+            // Initialize with center crop
+            val width = frame.buffer.width
+            val height = frame.buffer.height
+            val baseCropRect = RectF(
+                width * 0.25f,
+                height * 0.25f,
+                width * 0.75f,
+                height * 0.75f
+            )
+            lastCropRect.set(baseCropRect)
+            minWidthForUpdateCrop = (frame.buffer.width.toFloat() / 512f) * 20f // Adjust smoothing based on resolution
+        }
         
         // Process every Nth frame asynchronously to avoid blocking
         if (frameCount % FRAME_SKIP == 0L && !isProcessing.get()) {
@@ -73,14 +100,12 @@ class ExternalVideoFrameProcessor(
     }
     
     private fun processFrameAsync(frame: VideoFrame) {
-        val bitmap = videoFrameToBitmap(frame,) ?: return
+        val bitmap = videoFrameToBitmap(frame) ?: return
 
         try {
             val timestampMs = System.currentTimeMillis()
             val mpImage = BitmapImageBuilder(bitmap).build()
             val result = faceDetector?.processFrame(mpImage, timestampMs)
-            Log.d(TAG, "Face detector processed in ${System.currentTimeMillis() - timestampMs} ms")
-            Log.d(TAG, "Faces detected: ${result?.detections()?.size ?: 0}")
             val baseCropRect = RectF(
                 bitmap.width * 0.25f,
                 bitmap.height * 0.25f,
@@ -135,13 +160,8 @@ class ExternalVideoFrameProcessor(
         try {
             val bitmap = videoFrameToBitmap(frame) ?: return frame
             val croppedBitmap = Bitmap.createBitmap(bitmap, cropX, cropY, cropWidth, cropHeight)
-            val scaledBitmap = Bitmap.createScaledBitmap(croppedBitmap, outputWidth, outputHeight, true)
+            val scaledBitmap = croppedBitmap.scale(outputWidth, outputHeight)
             croppedFrameCount++
-            if (croppedFrameCount % LOG_INTERVAL == 1L) {
-                Log.i(TAG, "✂️ Cropped frame #$croppedFrameCount: crop=[$cropX,$cropY,${cropWidth}x$cropHeight] → output=${outputWidth}x$outputHeight")
-                val runtime = Runtime.getRuntime()
-                Log.d(TAG, "Memory: ${(runtime.totalMemory() - runtime.freeMemory()) / 1024 / 1024}MB used")
-            }
             val croppedFrame = convertBitmapToVideoFrame(scaledBitmap) ?: return frame
             scaledBitmap.recycle()
             croppedBitmap.recycle()
@@ -253,24 +273,35 @@ class ExternalVideoFrameProcessor(
         return RectF(left, top, right, bottom)
     }
     
-    private fun smoothCropRect(newRect: RectF): RectF {
-        val prev = lastCropRect.get()
-        if (prev == null) {
-            lastCropRect.set(newRect)
-            return newRect
+    private fun smoothCropRect(newRect: RectF) {
+        moveRectJob?.cancel()
+        moveRectJob = processorScope.launch(Dispatchers.IO) {
+            val currentRect = lastCropRect.get() ?: run {
+                lastCropRect.set(newRect)
+                return@launch
+            }
+
+            var startRect = RectF(currentRect) // Make a copy
+            if(abs(startRect.left - newRect.left) < minWidthForUpdateCrop) {
+                return@launch
+            }
+
+            while (this.isActive && abs(startRect.left - newRect.left) >= SMOOTHING_FACTOR * 2f) {
+                val interpolatedRect = RectF(
+                    lerp(startRect.left, newRect.left, SMOOTHING_FACTOR),
+                    lerp(startRect.top, newRect.top, SMOOTHING_FACTOR),
+                    lerp(startRect.right, newRect.right, SMOOTHING_FACTOR),
+                    lerp(startRect.bottom, newRect.bottom, SMOOTHING_FACTOR)
+                )
+
+                lastCropRect.set(interpolatedRect)
+                startRect = RectF(interpolatedRect)
+                kotlinx.coroutines.delay(20L) // Approx ~60fps
+            }
+            lastCropRect.set(newRect) // Ensure final rect is exactly the target
         }
-        
-        val smoothed = RectF(
-            lerp(prev.left, newRect.left, SMOOTHING_FACTOR),
-            lerp(prev.top, newRect.top, SMOOTHING_FACTOR),
-            lerp(prev.right, newRect.right, SMOOTHING_FACTOR),
-            lerp(prev.bottom, newRect.bottom, SMOOTHING_FACTOR)
-        )
-        
-        lastCropRect.set(smoothed)
-        return smoothed
     }
-    
+
     private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
 
     /**
@@ -340,6 +371,8 @@ class ExternalVideoFrameProcessor(
     fun close() {
         Log.i(TAG, "📊 Final Stats: Total frames=$frameCount, Detected=$detectedFrameCount, Cropped=$croppedFrameCount")
         Log.d(TAG, "Closing ExternalVideoFrameProcessor")
+        moveRectJob?.cancel()
+        processorScope.cancel()
         
         faceDetector?.close()
         yuvConverter.release()

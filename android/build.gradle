@@ -3,6 +3,7 @@ version '1.0-SNAPSHOT'
 
 buildscript {
     ext.kotlin_version = '1.9.21'
+    ext.coroutines_version = '1.7.3'
     repositories {
         google()
         mavenCentral()
@@ -59,4 +60,7 @@ dependencies {
     
     // MediaPipe for selfie segmentation
     implementation 'com.google.mediapipe:tasks-vision:0.10.14'
+    //coroutines
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutines_version"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutines_version"
 }

@@ -7,7 +7,6 @@ import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.facedetector.FaceDetector
 import com.google.mediapipe.tasks.vision.facedetector.FaceDetectorResult
-import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarkerResult
 
 class FaceDetectorWrapper(private val context: android.content.Context) {
 
