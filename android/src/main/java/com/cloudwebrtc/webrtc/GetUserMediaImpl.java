@@ -48,6 +48,7 @@ import com.cloudwebrtc.webrtc.utils.MediaConstraintsUtils;
 import com.cloudwebrtc.webrtc.utils.ObjectType;
 import com.cloudwebrtc.webrtc.utils.PermissionUtils;
 import com.cloudwebrtc.webrtc.video.LocalVideoTrack;
+import com.cloudwebrtc.webrtc.video.ExternalVideoFrameProcessor;
 import com.cloudwebrtc.webrtc.video.VideoCapturerInfo;
 
 import org.webrtc.AudioSource;
@@ -105,6 +106,7 @@ public class GetUserMediaImpl {
 
     private final Map<String, VideoCapturerInfoEx> mVideoCapturers = new HashMap<>();
     private final Map<String, SurfaceTextureHelper> mSurfaceTextureHelpers = new HashMap<>();
+    private final Map<String, ExternalVideoFrameProcessor> mFrameProcessors = new HashMap<>();
     private final StateProvider stateProvider;
     private final Context applicationContext;
 
@@ -813,6 +815,26 @@ public class GetUserMediaImpl {
         mediaStream.addTrack(track);
 
         LocalVideoTrack localVideoTrack = new LocalVideoTrack(track);
+        
+        // Add MediaPipe segmentation processor for face-focused zoom
+        try {
+            boolean enableSegmentation = videoConstraintsMap != null && videoConstraintsMap.hasKey("enableSegmentation") && videoConstraintsMap.getBoolean("enableSegmentation");
+
+            if(enableSegmentation) {
+                ExternalVideoFrameProcessor segmentationProcessor = new ExternalVideoFrameProcessor(
+                        applicationContext,
+                        info.width,
+                        info.height,
+                        true // Enable segmentation
+                );
+                localVideoTrack.addProcessor(segmentationProcessor);
+                mFrameProcessors.put(trackId, segmentationProcessor);
+                Log.d(TAG, "MediaPipe segmentation processor added to video track");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to add segmentation processor", e);
+        }
+        
         videoSource.setVideoProcessor(localVideoTrack);
 
         stateProvider.putLocalTrack(track.id(),localVideoTrack);
@@ -856,6 +878,13 @@ public class GetUserMediaImpl {
                     helper.stopListening();
                     helper.dispose();
                     mSurfaceTextureHelpers.remove(id);
+                }
+                // Clean up frame processor
+                ExternalVideoFrameProcessor processor = mFrameProcessors.get(id);
+                if (processor != null) {
+                    processor.close();
+                    mFrameProcessors.remove(id);
+                    Log.d(TAG, "Frame processor cleaned up for track: " + id);
                 }
             }
         }
