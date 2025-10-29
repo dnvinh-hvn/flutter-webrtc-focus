@@ -825,7 +825,8 @@ public class GetUserMediaImpl {
                         applicationContext,
                         info.width,
                         info.height,
-                        true // Enable segmentation
+                        true, // Enable segmentation
+                        false // Disable face detection
                 );
                 localVideoTrack.addProcessor(segmentationProcessor);
                 mFrameProcessors.put(trackId, segmentationProcessor);

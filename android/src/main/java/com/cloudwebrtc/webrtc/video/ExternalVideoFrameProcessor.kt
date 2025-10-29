@@ -33,7 +33,8 @@ class ExternalVideoFrameProcessor(
     context: Context,
     private val outputWidth: Int,
     private val outputHeight: Int,
-    private val enableSegmentation: Boolean = true
+    private val enableSegmentation: Boolean = true,
+    private val enableFaceDetection: Boolean = true
 ) : LocalVideoTrack.ExternalVideoFrameProcessing {
     
     private val TAG = "FrameProcessor"
@@ -63,32 +64,36 @@ class ExternalVideoFrameProcessor(
         
         frameCount++
 
-        if(lastCropRect.get() == null && frame.buffer.width > 1f && frame.buffer.height > 1f) {
-            // Initialize with center crop
-            val width = frame.buffer.width
-            val height = frame.buffer.height
-            val baseCropRect = RectF(
-                width * 0.25f,
-                height * 0.25f,
-                width * 0.75f,
-                height * 0.75f
-            )
-            lastCropRect.set(baseCropRect)
-            minWidthForUpdateCrop = (frame.buffer.width.toFloat() / 512f) * 20f // Adjust smoothing based on resolution
-        }
-        
+        var mustRelease = true
         // Process every Nth frame asynchronously to avoid blocking
-        if (frameCount % FRAME_SKIP == 0L && !isProcessing.get()) {
+        if (enableFaceDetection && frameCount % FRAME_SKIP == 0L && !isProcessing.get()) {
+            mustRelease = false
             isProcessing.set(true)
             frame.retain() // Retain to keep alive during async processing
-            
-            executor.execute {
+            if(lastCropRect.get() == null && frame.buffer.width > 1f && frame.buffer.height > 1f) {
+                // Initialize with center crop
+                val width = frame.buffer.width
+                val height = frame.buffer.height
+                val baseCropRect = RectF(
+                    width * 0.25f,
+                    height * 0.25f,
+                    width * 0.75f,
+                    height * 0.75f
+                )
+                lastCropRect.set(baseCropRect)
+                minWidthForUpdateCrop = (frame.buffer.width.toFloat() / 512f) * 20f // Adjust smoothing based on resolution
+            }
+            processorScope.launch(Dispatchers.IO) {
                 try {
                     processFrameAsync(frame)
                 } catch (e: Exception) {
                     Log.e(TAG, "Error in async processing", e)
                 } finally {
-                    frame.release()
+                    try {
+                        frame.release()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error releasing frame: ${e.message}", e)
+                    }
                     isProcessing.set(false)
                 }
             }
@@ -96,7 +101,7 @@ class ExternalVideoFrameProcessor(
         
         // Always return original frame immediately (don't block)
         // The crop rect will be updated asynchronously and used for future frames
-        return applyCropRect(frame)
+        return applyCropRect(frame, mustRelease)
     }
     
     private fun processFrameAsync(frame: VideoFrame) {
@@ -115,7 +120,7 @@ class ExternalVideoFrameProcessor(
             var cropRect = baseCropRect
             result?.detections()?.firstOrNull()?.boundingBox()?.let { bbox ->
                 detectedFrameCount++
-
+                Log.d(TAG, "👤 Face detected with bbox: $bbox")
                 // Compute crop rect with padding
                 val faceCropRect = computeCropRectWithPadding(bbox, bitmap.width, bitmap.height)
                 if(faceCropRect.width() > 0 && faceCropRect.height() > 0){
@@ -140,7 +145,7 @@ class ExternalVideoFrameProcessor(
         }
     }
     
-    private fun applyCropRect(frame: VideoFrame): VideoFrame {
+    private fun applyCropRect(frame: VideoFrame, mustRelease: Boolean = true): VideoFrame {
         val cropRect = lastCropRect.get() ?: return frame
         
         val buffer = frame.buffer
@@ -234,7 +239,6 @@ class ExternalVideoFrameProcessor(
         // Create the video frame
         return VideoFrame(i420Buffer, 0, System.nanoTime())
     }
-
     
     private fun computeCropRectWithPadding(bbox: RectF, width: Int, height: Int): RectF {
         val bboxWidth = bbox.width()
@@ -296,9 +300,11 @@ class ExternalVideoFrameProcessor(
 
                 lastCropRect.set(interpolatedRect)
                 startRect = RectF(interpolatedRect)
-                kotlinx.coroutines.delay(20L) // Approx ~60fps
+                kotlinx.coroutines.delay(30L) // Adjust delay for smoother/faster transitions
             }
-            lastCropRect.set(newRect) // Ensure final rect is exactly the target
+            if(isActive) {
+                lastCropRect.set(newRect) // Ensure final rect is exactly the target
+            }
         }
     }
 
