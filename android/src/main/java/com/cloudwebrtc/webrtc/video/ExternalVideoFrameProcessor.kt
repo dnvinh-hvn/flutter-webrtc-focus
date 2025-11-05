@@ -49,8 +49,7 @@ class ExternalVideoFrameProcessor(
     private var SMOOTHING_FACTOR = 0.05f
     private var minWidthForUpdateCrop = 20f
     private val PADDING_FACTOR = 0.5f
-    private val FRAME_SKIP = 20 // Process every 3rd frame for detection
-    private val yuvConverter = YuvConverter()
+    private val FRAME_SKIP = 20 // Process every 3rd
     private val LOG_INTERVAL = 30 // Log every 30 frames
 
     private var moveRectJob: Job? = null
@@ -64,25 +63,27 @@ class ExternalVideoFrameProcessor(
         
         frameCount++
 
+        if(lastCropRect.get() == null && frame.buffer.width > 1f && frame.buffer.height > 1f) {
+            // Initialize with center crop
+            val width = frame.buffer.width
+            val height = frame.buffer.height
+            val baseCropRect = RectF(
+                width * 0.25f,
+                height * 0.25f,
+                width * 0.75f,
+                height * 0.75f
+            )
+            lastCropRect.set(baseCropRect)
+            minWidthForUpdateCrop = (frame.buffer.width.toFloat() / 512f) * 20f // Adjust smoothing based on resolution
+        }
+
         var mustRelease = true
         // Process every Nth frame asynchronously to avoid blocking
         if (enableFaceDetection && frameCount % FRAME_SKIP == 0L && !isProcessing.get()) {
             mustRelease = false
             isProcessing.set(true)
             frame.retain() // Retain to keep alive during async processing
-            if(lastCropRect.get() == null && frame.buffer.width > 1f && frame.buffer.height > 1f) {
-                // Initialize with center crop
-                val width = frame.buffer.width
-                val height = frame.buffer.height
-                val baseCropRect = RectF(
-                    width * 0.25f,
-                    height * 0.25f,
-                    width * 0.75f,
-                    height * 0.75f
-                )
-                lastCropRect.set(baseCropRect)
-                minWidthForUpdateCrop = (frame.buffer.width.toFloat() / 512f) * 20f // Adjust smoothing based on resolution
-            }
+
             processorScope.launch(Dispatchers.IO) {
                 try {
                     processFrameAsync(frame)
@@ -144,11 +145,12 @@ class ExternalVideoFrameProcessor(
             bitmap.recycle()
         }
     }
-    
+    private var previousBuffer: VideoFrame.Buffer? = null
     private fun applyCropRect(frame: VideoFrame, mustRelease: Boolean = true): VideoFrame {
         val cropRect = lastCropRect.get() ?: return frame
         
         val buffer = frame.buffer
+        buffer.retain()
 
         val width = buffer.width
         val height = buffer.height
@@ -161,83 +163,14 @@ class ExternalVideoFrameProcessor(
         if (cropX < 5 && cropY < 5 && cropWidth > width - 10 && cropHeight > height - 10) {
             return frame
         }
-        
-        try {
-            val bitmap = videoFrameToBitmap(frame) ?: return frame
-            val croppedBitmap = Bitmap.createBitmap(bitmap, cropX, cropY, cropWidth, cropHeight)
-            val scaledBitmap = croppedBitmap.scale(outputWidth, outputHeight)
-            croppedFrameCount++
-            val croppedFrame = convertBitmapToVideoFrame(scaledBitmap) ?: return frame
-            scaledBitmap.recycle()
-            croppedBitmap.recycle()
-            return croppedFrame
-        } catch (e: OutOfMemoryError) {
-            Log.e(TAG, "⚠️ Out of memory in applyCropRect! Clearing crop to recover")
-            lastCropRect.set(null)
-            return frame
-        } catch (e: Exception) {
-            Log.e(TAG, "Error applying crop rect: ${e.message}", e)
-            return frame
-        }
-    }
-    private fun convertBitmapToVideoFrame(bitmap: Bitmap): VideoFrame? {
-        // Create the buffer for the video frame
-        val width = bitmap.width
-        val height = bitmap.height
-
-        // Calculate the size of the Y, U, and V buffers
-        val ySize = width * height
-        val uvSize = ySize / 4
-
-        // Allocate buffers for Y, U, and V planes
-        val yBuffer = ByteBuffer.allocateDirect(ySize)
-        val uBuffer = ByteBuffer.allocateDirect(uvSize)
-        val vBuffer = ByteBuffer.allocateDirect(uvSize)
-
-        // Lock the bitmap to get the pixel data
-        val pixels = IntArray(width * height)
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-
-        // Fill the Y, U, and V buffers with the pixel data
-        for (i in pixels.indices) {
-            val color = pixels[i]
-
-            // Extract the R, G, and B components
-            val r = (color shr 16) and 0xFF
-            val g = (color shr 8) and 0xFF
-            val b = color and 0xFF
-
-            // Calculate Y, U, and V values
-            val y = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
-            val u = (-0.169 * r - 0.331 * g + 0.5 * b + 128).toInt()
-            val v = (0.5 * r - 0.419 * g - 0.081 * b + 128).toInt()
-
-            // Fill the Y buffer
-            yBuffer.put(y.toByte())
-
-            // Fill the U and V buffers (4:2:0 subsampling)
-            if (i % 2 == 0 && (i / width) % 2 == 0) {
-                uBuffer.put(u.toByte())
-                vBuffer.put(v.toByte())
-            }
-        }
-
-        // Rewind the buffers to prepare for reading
-        yBuffer.rewind()
-        uBuffer.rewind()
-        vBuffer.rewind()
-
-        // Create the I420 buffer
-        val i420Buffer = JavaI420Buffer.wrap(
-            width, height,
-            yBuffer, width,
-            uBuffer, width / 2,
-            vBuffer, width / 2,
-            null
-        )
-
-        // Create the video frame
-        return VideoFrame(i420Buffer, 0, System.nanoTime())
+        val i420Buffer = buffer.toI420()
+        val scaled = JavaI420Buffer.cropAndScaleI420(i420Buffer, cropX, cropY, cropWidth, cropHeight, outputWidth, outputHeight)
+        val croppedFrame = VideoFrame(scaled, frame.rotation, frame.timestampNs)
+        i420Buffer?.release()
+        buffer.release()
+        previousBuffer?.release()
+        previousBuffer = scaled
+        return croppedFrame
     }
     
     private fun computeCropRectWithPadding(bbox: RectF, width: Int, height: Int): RectF {
@@ -381,7 +314,6 @@ class ExternalVideoFrameProcessor(
         processorScope.cancel()
         
         faceDetector?.close()
-        yuvConverter.release()
         executor.shutdown()
         try {
             if (!executor.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS)) {
@@ -390,5 +322,6 @@ class ExternalVideoFrameProcessor(
         } catch (e: InterruptedException) {
             executor.shutdownNow()
         }
+        previousBuffer?.release()
     }
 }
