@@ -59,7 +59,7 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
     
     // MediaPipe for selfie segmentation
-    implementation 'com.google.mediapipe:tasks-vision:0.10.14'
+//    implementation 'com.google.mediapipe:tasks-vision:0.10.29'
     //coroutines
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutines_version"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutines_version"

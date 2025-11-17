@@ -8,7 +8,7 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.YuvImage
 import android.util.Log
-import com.google.mediapipe.framework.image.BitmapImageBuilder
+//import com.google.mediapipe.framework.image.BitmapImageBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -110,8 +110,8 @@ class ExternalVideoFrameProcessor(
 
         try {
             val timestampMs = System.currentTimeMillis()
-            val mpImage = BitmapImageBuilder(bitmap).build()
-            val result = faceDetector?.processFrame(mpImage, timestampMs)
+//            val mpImage = BitmapImageBuilder(bitmap).build()
+//            val result = faceDetector?.processFrame(mpImage, timestampMs)
             val baseCropRect = RectF(
                 bitmap.width * 0.25f,
                 bitmap.height * 0.25f,
@@ -119,25 +119,25 @@ class ExternalVideoFrameProcessor(
                 bitmap.height * 0.75f
             )
             var cropRect = baseCropRect
-            result?.detections()?.firstOrNull()?.boundingBox()?.let { bbox ->
-                detectedFrameCount++
-                Log.d(TAG, "👤 Face detected with bbox: $bbox")
-                // Compute crop rect with padding
-                val faceCropRect = computeCropRectWithPadding(bbox, bitmap.width, bitmap.height)
-                if(faceCropRect.width() > 0 && faceCropRect.height() > 0){
-                    if(faceCropRect.width() < bitmap.width / 2f) {
-                        val scaleW = (bitmap.width / 2f) - faceCropRect.width()
-                        faceCropRect.left = (faceCropRect.left - scaleW / 2f).coerceAtLeast(0f)
-                        faceCropRect.right = (faceCropRect.right + scaleW / 2f).coerceAtMost(bitmap.width.toFloat())
-                    }
-                    if(faceCropRect.height() < bitmap.height / 2f) {
-                        val scaleH = (bitmap.height / 2f) - faceCropRect.height()
-                        faceCropRect.top = (faceCropRect.top - scaleH / 2f).coerceAtLeast(0f)
-                        faceCropRect.bottom = (faceCropRect.bottom + scaleH / 2f).coerceAtMost(bitmap.height.toFloat())
-                    }
-                    cropRect = faceCropRect
-                }
-            }
+//            result?.detections()?.firstOrNull()?.boundingBox()?.let { bbox ->
+//                detectedFrameCount++
+//                Log.d(TAG, "👤 Face detected with bbox: $bbox")
+//                // Compute crop rect with padding
+//                val faceCropRect = computeCropRectWithPadding(bbox, bitmap.width, bitmap.height)
+//                if(faceCropRect.width() > 0 && faceCropRect.height() > 0){
+//                    if(faceCropRect.width() < bitmap.width / 2f) {
+//                        val scaleW = (bitmap.width / 2f) - faceCropRect.width()
+//                        faceCropRect.left = (faceCropRect.left - scaleW / 2f).coerceAtLeast(0f)
+//                        faceCropRect.right = (faceCropRect.right + scaleW / 2f).coerceAtMost(bitmap.width.toFloat())
+//                    }
+//                    if(faceCropRect.height() < bitmap.height / 2f) {
+//                        val scaleH = (bitmap.height / 2f) - faceCropRect.height()
+//                        faceCropRect.top = (faceCropRect.top - scaleH / 2f).coerceAtLeast(0f)
+//                        faceCropRect.bottom = (faceCropRect.bottom + scaleH / 2f).coerceAtMost(bitmap.height.toFloat())
+//                    }
+//                    cropRect = faceCropRect
+//                }
+//            }
             smoothCropRect(cropRect)
         } catch (e: Exception) {
             Log.e(TAG, "Error in face detection processing", e)
@@ -313,7 +313,7 @@ class ExternalVideoFrameProcessor(
         moveRectJob?.cancel()
         processorScope.cancel()
         
-        faceDetector?.close()
+//        faceDetector?.close()
         executor.shutdown()
         try {
             if (!executor.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS)) {
